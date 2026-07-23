@@ -3,7 +3,10 @@ name = "whatsapp-mcp-server"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+# Payana: cap the upper bound. mcp[cli] -> pydantic-core has no cp314 wheel, so
+# on Python 3.14 `uv sync`/`uv run` falls through to a source build and dies in
+# pyo3. The launcher also pins the interpreter (uv run -p 3.12) as belt-and-braces.
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "httpx>=0.28.1",
     "mcp[cli]>=1.6.0",
