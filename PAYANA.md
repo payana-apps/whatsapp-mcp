@@ -18,6 +18,10 @@ Each item below is a single reviewable commit on top of the forked base.
   bridge reconnects and WhatsApp re-delivers old messages as fresh events.
 - `WA_QR_RAW:<code>` line at pairing — lets the `whatsapp-mcp` skill render the
   QR as a Claude Artifact instead of unreadable terminal ASCII.
+- whatsmeow bump (+ `context` API adaptations) — the version upstream pins
+  reports a client version WhatsApp now rejects at connect time
+  (`405 client outdated`), so it never reaches pairing. Bumped to a current
+  whatsmeow; requires Go 1.25.
 - Security hardening — loopback bind (`WHATSAPP_BRIDGE_HOST`, default
   `127.0.0.1`), per-run token on `/api/send` + `/api/download` (`X-Bridge-Token`),
   same-origin + `application/json` enforcement, `media_path` allowlist
