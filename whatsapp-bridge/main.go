@@ -885,6 +885,12 @@ func main() {
 		for evt := range qrChan {
 			if evt.Event == "code" {
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
+				// Payana: emit the raw pairing string on its own line so the
+				// whatsapp-mcp skill can grep it and render a legible QR as a
+				// Claude Artifact instead of relying on terminal ASCII, which
+				// rarely renders correctly. The bridge log this lands in is
+				// written 0600 under the per-user cache dir by the launcher.
+				fmt.Printf("WA_QR_RAW:%s\n", evt.Code)
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 			} else if evt.Event == "success" {
 				connected <- true
