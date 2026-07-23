@@ -23,10 +23,13 @@ Each item below is a single reviewable commit on top of the forked base.
   (`405 client outdated`), so it never reaches pairing. Bumped to a current
   whatsmeow; requires Go 1.25.
 - Security hardening — loopback bind (`WHATSAPP_BRIDGE_HOST`, default
-  `127.0.0.1`), per-run token on `/api/send` + `/api/download` (`X-Bridge-Token`),
-  same-origin + `application/json` enforcement, `media_path` allowlist
-  (`WHATSAPP_MEDIA_ROOT`, default `$HOME`, sensitive dirs denied), fatal bind.
-  Covered by `whatsapp-bridge/security_test.go`.
+  `127.0.0.1`), per-run token on `/api/send` + `/api/download` (`X-Bridge-Token`);
+  the bridge **fails closed**: it refuses to start without a token. Same-origin +
+  `application/json` enforcement. `media_path` allowlist (`WHATSAPP_MEDIA_ROOT`,
+  default `~/Downloads` — a real media dir, not all of `$HOME`), with sensitive
+  dirs (`.ssh`, `.aws`, `Keychains`, …) and file basenames (`.git-credentials`,
+  `.netrc`, `.npmrc`, `id_rsa`, …) denied. Fatal bind. Covered by
+  `whatsapp-bridge/security_test.go`.
 
 **Python MCP server (`whatsapp-mcp-server/`)**
 - Env-driven store/bridge config (`WHATSAPP_STORE_DIR`, host/port, token) so the

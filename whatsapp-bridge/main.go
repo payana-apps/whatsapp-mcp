@@ -813,6 +813,15 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 }
 
 func main() {
+	// Payana: fail closed on auth. The launcher always sets WHATSAPP_BRIDGE_TOKEN;
+	// refuse to start without one so the REST API is never left unauthenticated.
+	// Standalone/manual runs must set it explicitly.
+	if bridgeToken == "" {
+		fmt.Println("FATAL: WHATSAPP_BRIDGE_TOKEN is not set. The launcher sets it automatically; " +
+			"for a manual run, export WHATSAPP_BRIDGE_TOKEN=$(openssl rand -hex 32) first.")
+		os.Exit(1)
+	}
+
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")

@@ -89,13 +89,21 @@ func authorizeRequest(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// sensitiveDirs are never allowed as (a component of) a media path even when
+// sensitiveDirs / sensitiveNames are never allowed in a media path even when
 // they sit under the allowed root, so a coerced request can't read secrets.
-var sensitiveDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".config"}
+var sensitiveDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".config", "Keychains"}
+
+// sensitiveNames are exact file basenames denied anywhere under the root.
+var sensitiveNames = map[string]bool{
+	".git-credentials": true, ".netrc": true, ".npmrc": true, ".pgpass": true,
+	".zsh_history": true, ".bash_history": true, ".python_history": true,
+	"id_rsa": true, "id_ed25519": true, "id_ecdsa": true, ".env": true,
+}
 
 // validateMediaPath resolves a caller-supplied media path and confirms it lives
-// under the allowed root (WHATSAPP_MEDIA_ROOT, default $HOME) and touches none
-// of the sensitive directories. Returns the resolved absolute path to use.
+// under the allowed root (WHATSAPP_MEDIA_ROOT, default ~/Downloads — a real
+// media dir, NOT all of $HOME) and touches none of the sensitive dirs/files.
+// Returns the resolved absolute path to use.
 func validateMediaPath(p string) (string, error) {
 	if p == "" {
 		return "", nil
@@ -115,7 +123,9 @@ func validateMediaPath(p string) (string, error) {
 		if herr != nil {
 			return "", fmt.Errorf("cannot determine home directory: %v", herr)
 		}
-		root = home
+		// Default to a real media directory, not the whole home dir — otherwise
+		// dotfiles like ~/.git-credentials / ~/.netrc stay readable.
+		root = filepath.Join(home, "Downloads")
 	}
 	rootResolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -132,6 +142,9 @@ func validateMediaPath(p string) (string, error) {
 		if strings.Contains(resolved, sep+deny+sep) || strings.HasSuffix(resolved, sep+deny) {
 			return "", fmt.Errorf("media path in a sensitive location (%s) is not allowed", deny)
 		}
+	}
+	if sensitiveNames[filepath.Base(resolved)] {
+		return "", fmt.Errorf("media path points at a sensitive file (%s) and is not allowed", filepath.Base(resolved))
 	}
 	return resolved, nil
 }

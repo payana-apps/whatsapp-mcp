@@ -95,6 +95,14 @@ func TestValidateMediaPath(t *testing.T) {
 	if _, err := validateMediaPath(secret); err == nil {
 		t.Fatal("path in a sensitive dir must be rejected")
 	}
+	// A sensitive file basename sitting directly under the root must be denied.
+	netrc := filepath.Join(root, ".netrc")
+	if err := os.WriteFile(netrc, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateMediaPath(netrc); err == nil {
+		t.Fatal("a sensitive file basename (.netrc) under the root must be rejected")
+	}
 	if _, err := validateMediaPath(filepath.Join(root, "..", "escape")); err == nil {
 		t.Fatal("traversal escaping the root must be rejected")
 	}
