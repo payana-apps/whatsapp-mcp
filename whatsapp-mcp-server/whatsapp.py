@@ -2,13 +2,52 @@ import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
+import os
 import os.path
 import requests
 import json
 import audio
 
-MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+# Payana: the WhatsApp store (SQLite session + messages) lives under a per-user
+# cache dir set by the launcher via WHATSAPP_STORE_DIR, so `claude plugin update`
+# reconciling the plugin tree never clobbers it and unlinks the phone. Falls back
+# to the upstream sibling path for a standalone checkout.
+_DEFAULT_STORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store')
+STORE_DIR = os.environ.get('WHATSAPP_STORE_DIR', _DEFAULT_STORE_DIR)
+MESSAGES_DB_PATH = os.path.join(STORE_DIR, 'messages.db')
+WHATSAPP_DB_PATH = os.path.join(STORE_DIR, 'whatsapp.db')
+
+# Payana: the bridge binds loopback with a per-run token; the launcher passes
+# host/port/token through the environment so this client matches it.
+_BRIDGE_HOST = os.environ.get('WHATSAPP_BRIDGE_HOST', '127.0.0.1')
+_BRIDGE_PORT = os.environ.get('WHATSAPP_BRIDGE_PORT', '8080')
+WHATSAPP_API_BASE_URL = os.environ.get('WHATSAPP_API_BASE_URL', f"http://{_BRIDGE_HOST}:{_BRIDGE_PORT}/api")
+BRIDGE_TOKEN = os.environ.get('WHATSAPP_BRIDGE_TOKEN', '')
+
+
+class BridgeNotLinkedError(Exception):
+    """Raised when the local WhatsApp store does not exist yet (phone never
+    linked). Distinguishes a never-started bridge from a genuine empty result,
+    so the model doesn't tell the user 'no messages with X' when the truth is
+    'the bridge was never paired'."""
+
+
+def _api_headers() -> dict:
+    """Headers for every bridge request: JSON, plus the shared per-run token
+    when the launcher configured one."""
+    headers = {"Content-Type": "application/json"}
+    if BRIDGE_TOKEN:
+        headers["X-Bridge-Token"] = BRIDGE_TOKEN
+    return headers
+
+
+def _require_linked() -> None:
+    if not os.path.exists(MESSAGES_DB_PATH):
+        raise BridgeNotLinkedError(
+            f"WhatsApp is not linked yet (no store at {MESSAGES_DB_PATH}). "
+            "Run the whatsapp-mcp skill to start the bridge and scan the pairing "
+            "QR before reading messages or contacts."
+        )
 
 @dataclass
 class Message:
@@ -134,6 +173,7 @@ def list_messages(
     context_after: int = 1
 ) -> List[Message]:
     """Get messages matching the specified criteria with optional context."""
+    _require_linked()
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -229,6 +269,7 @@ def get_message_context(
     after: int = 5
 ) -> MessageContext:
     """Get context around a specific message."""
+    _require_linked()
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -324,6 +365,7 @@ def list_chats(
     sort_by: str = "last_active"
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
+    _require_linked()
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -634,7 +676,7 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
             "message": message,
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, headers=_api_headers())
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -668,7 +710,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, headers=_api_headers())
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -708,7 +750,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, headers=_api_headers())
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -741,7 +783,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, headers=_api_headers())
         
         if response.status_code == 200:
             result = response.json()
