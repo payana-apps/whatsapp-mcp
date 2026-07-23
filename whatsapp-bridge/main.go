@@ -410,18 +410,11 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 
 // Handle regular incoming messages with media support
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
-	// Save message to database
 	chatJID := msg.Info.Chat.String()
 	sender := msg.Info.Sender.User
 
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, sender, logger)
-
-	// Update chat in database with the message timestamp (keeps last message time updated)
-	err := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp)
-	if err != nil {
-		logger.Warnf("Failed to store chat: %v", err)
-	}
 
 	// Extract text content
 	content := extractTextContent(msg.Message)
@@ -432,6 +425,28 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	// Skip if there's no content and no media
 	if content == "" && mediaType == "" {
 		return
+	}
+
+	// Payana: skip if this message is already stored, to preserve the original
+	// timestamp written by history sync. When the bridge reconnects after being
+	// offline, WhatsApp re-delivers old messages as fresh events carrying the
+	// delivery time instead of the original send time. handleHistorySync stores
+	// the authoritative timestamp first; overwriting it here corrupts message
+	// ordering. Guarding here also keeps the chat's last_message_time correct.
+	var exists int
+	_ = messageStore.db.QueryRow(
+		"SELECT COUNT(*) FROM messages WHERE id = ? AND chat_jid = ?",
+		msg.Info.ID, chatJID,
+	).Scan(&exists)
+	if exists > 0 {
+		return
+	}
+
+	// Update chat's last message time only when actually storing a new message,
+	// so a re-delivered old message never bumps it to a wrong timestamp.
+	err := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp)
+	if err != nil {
+		logger.Warnf("Failed to store chat: %v", err)
 	}
 
 	// Store message in database
