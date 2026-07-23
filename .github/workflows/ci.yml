@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  go-bridge:
+    name: go build + test (bridge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: build
+        working-directory: whatsapp-bridge
+        run: go build ./...
+      - name: vet
+        working-directory: whatsapp-bridge
+        run: go vet ./...
+      - name: test (security guards + media allowlist)
+        working-directory: whatsapp-bridge
+        run: go test ./...
+
+  python-server:
+    name: pytest (contact search + guards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install runtime + test deps
+        working-directory: whatsapp-mcp-server
+        run: pip install requests pytest
+      - name: pytest
+        working-directory: whatsapp-mcp-server
+        run: python -m pytest test_search.py -q
