@@ -233,6 +233,15 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 
 	// Check if we have media to send
 	if mediaPath != "" {
+		// Payana: constrain the caller-supplied path to the allowed root and
+		// reject sensitive locations before touching the filesystem, so a coerced
+		// request can't exfiltrate arbitrary files (e.g. ~/.ssh/id_rsa).
+		resolvedPath, verr := validateMediaPath(mediaPath)
+		if verr != nil {
+			return false, fmt.Sprintf("Error: %v", verr)
+		}
+		mediaPath = resolvedPath
+
 		// Read media file
 		mediaData, err := os.ReadFile(mediaPath)
 		if err != nil {
@@ -694,9 +703,8 @@ func extractDirectPathFromURL(url string) string {
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
 	// Handler for sending messages
 	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
-		// Only allow POST requests
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		// Payana: enforce POST + same-origin + JSON + per-run token before doing anything.
+		if !authorizeRequest(w, r) {
 			return
 		}
 
@@ -740,9 +748,8 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 
 	// Handler for downloading media
 	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
-		// Only allow POST requests
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		// Payana: same guards as /api/send.
+		if !authorizeRequest(w, r) {
 			return
 		}
 
@@ -789,14 +796,18 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
-	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	// Start the server. Payana: bind the configured host (loopback by default)
+	// instead of every interface.
+	serverAddr := fmt.Sprintf("%s:%d", bridgeHost, port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
-	// Run server in a goroutine so it doesn't block
+	// Run server in a goroutine so it doesn't block. Payana: a failed bind (e.g.
+	// port already in use) must be fatal — otherwise the process looks healthy
+	// while every MCP call gets connection-refused with no visible cause.
 	go func() {
 		if err := http.ListenAndServe(serverAddr, nil); err != nil {
-			fmt.Printf("REST API server error: %v\n", err)
+			fmt.Printf("FATAL: REST API server failed to start on %s: %v\n", serverAddr, err)
+			os.Exit(1)
 		}
 	}()
 }
@@ -926,8 +937,8 @@ func main() {
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
-	// Start REST API server
-	startRESTServer(client, messageStore, 8080)
+	// Start REST API server (Payana: port is env-configurable, default 8080)
+	startRESTServer(client, messageStore, bridgePort)
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
