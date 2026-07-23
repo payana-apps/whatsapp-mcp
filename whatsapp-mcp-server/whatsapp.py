@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Optional, List, Tuple
 import os
 import os.path
+import unicodedata
+from difflib import SequenceMatcher
 import requests
 import json
 import audio
@@ -432,46 +434,117 @@ def list_chats(
             conn.close()
 
 
-def search_contacts(query: str) -> List[Contact]:
-    """Search contacts by name or phone number."""
+def _normalize(text: Optional[str]) -> str:
+    """Casefold and strip accents/diacritics so 'Fernán' matches 'fernan'."""
+    if not text:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", text)
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return stripped.casefold().strip()
+
+
+def _similarity(query_norm: str, candidate: Optional[str]) -> float:
+    """0..1 score for how well an already-normalized query matches a candidate.
+    Exact and substring hits rank above a plain fuzzy ratio."""
+    cand = _normalize(candidate)
+    if not cand or not query_norm:
+        return 0.0
+    if query_norm == cand:
+        return 1.0
+    if query_norm in cand:
+        return 0.85 + 0.15 * (len(query_norm) / len(cand))
+    return SequenceMatcher(None, query_norm, cand).ratio()
+
+
+def _load_contacts(include_groups: bool = False) -> List[Contact]:
+    """Collect known contacts from the messages store (chats table) and, when
+    available, the richer names in the whatsmeow store. A later source never
+    overwrites an earlier non-empty name for the same JID."""
+    _require_linked()
+    by_jid: dict = {}
+
+    def _add(jid: Optional[str], name: Optional[str]) -> None:
+        if not jid:
+            return
+        if not include_groups and jid.endswith("@g.us"):
+            return
+        existing = by_jid.get(jid)
+        if existing is None:
+            by_jid[jid] = Contact(phone_number=jid.split("@")[0], name=name, jid=jid)
+        elif not existing.name and name:
+            existing.name = name
+
+    # chats table (messages.db) — present once the bridge has linked.
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
-        cursor = conn.cursor()
-        
-        # Split query into characters to support partial matching
-        search_pattern = '%' +query + '%'
-        
-        cursor.execute("""
-            SELECT DISTINCT 
-                jid,
-                name
-            FROM chats
-            WHERE 
-                (LOWER(name) LIKE LOWER(?) OR LOWER(jid) LIKE LOWER(?))
-                AND jid NOT LIKE '%@g.us'
-            ORDER BY name, jid
-            LIMIT 50
-        """, (search_pattern, search_pattern))
-        
-        contacts = cursor.fetchall()
-        
-        result = []
-        for contact_data in contacts:
-            contact = Contact(
-                phone_number=contact_data[0].split('@')[0],
-                name=contact_data[1],
-                jid=contact_data[0]
-            )
-            result.append(contact)
-            
-        return result
-        
+        for jid, name in conn.execute(
+            "SELECT DISTINCT jid, name FROM chats WHERE jid != '0@s.whatsapp.net'"
+        ):
+            _add(jid, name)
+        conn.close()
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return []
-    finally:
-        if 'conn' in locals():
-            conn.close()
+        print(f"Database error reading chats: {e}")
+
+    # whatsmeow contacts (whatsapp.db) — push/full names, richer than chat names.
+    if os.path.exists(WHATSAPP_DB_PATH):
+        try:
+            wconn = sqlite3.connect(WHATSAPP_DB_PATH)
+            rows = wconn.execute(
+                """
+                SELECT their_jid,
+                       COALESCE(NULLIF(TRIM(full_name), ''),
+                                NULLIF(TRIM(first_name), ''),
+                                NULLIF(TRIM(push_name), '')) AS display_name
+                FROM whatsmeow_contacts
+                WHERE their_jid IS NOT NULL
+                """
+            ).fetchall()
+            for jid, name in rows:
+                _add(jid, name)
+            wconn.close()
+        except sqlite3.Error:
+            # whatsmeow's schema varies across versions; the chats table is enough.
+            pass
+
+    return list(by_jid.values())
+
+
+def search_contacts(query: str, limit: int = 25, include_groups: bool = False) -> List[Contact]:
+    """Fuzzy search contacts by name or phone number, accent- and case-insensitive.
+
+    Payana reimplementation (stdlib only — unicodedata + difflib) of the
+    accent-tolerant search the CS team relies on for LATAM names. Ranks exact and
+    substring matches above fuzzy ones and returns the best `limit` contacts.
+    """
+    query_norm = _normalize(query)
+    digits = "".join(c for c in query if c.isdigit())
+    scored: List[Tuple[float, Contact]] = []
+    for contact in _load_contacts(include_groups=include_groups):
+        score = _similarity(query_norm, contact.name)
+        if digits and digits in contact.jid:
+            local = contact.jid.split("@")[0]
+            score = max(score, 0.9 + 0.1 * (len(digits) / max(len(local), 1)))
+        if score > 0:
+            scored.append((score, contact))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [contact for _, contact in scored[:limit]]
+
+
+def smart_search_contacts(query: str, limit: int = 25, include_groups: bool = False,
+                          similarity_threshold: float = 0.6) -> List[Contact]:
+    """Like search_contacts but only returns matches at or above
+    `similarity_threshold`, for when precision matters more than recall."""
+    query_norm = _normalize(query)
+    digits = "".join(c for c in query if c.isdigit())
+    scored: List[Tuple[float, Contact]] = []
+    for contact in _load_contacts(include_groups=include_groups):
+        score = _similarity(query_norm, contact.name)
+        if digits and digits in contact.jid:
+            score = max(score, 0.9)
+        if score >= similarity_threshold:
+            scored.append((score, contact))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [contact for _, contact in scored[:limit]]
 
 
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:

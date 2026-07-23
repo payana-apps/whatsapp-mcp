@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
+    smart_search_contacts as whatsapp_smart_search_contacts,
     list_messages as whatsapp_list_messages,
     list_chats as whatsapp_list_chats,
     get_chat as whatsapp_get_chat,
@@ -19,13 +20,35 @@ from whatsapp import (
 mcp = FastMCP("whatsapp")
 
 @mcp.tool()
-def search_contacts(query: str) -> List[Dict[str, Any]]:
-    """Search WhatsApp contacts by name or phone number.
-    
+def search_contacts(query: str, limit: int = 25, include_groups: bool = False) -> List[Dict[str, Any]]:
+    """Search WhatsApp contacts by name or phone number, accent- and case-insensitive.
+
     Args:
         query: Search term to match against contact names or phone numbers
+        limit: Maximum number of results to return (default 25)
+        include_groups: Whether to include group chats in results (default False)
     """
-    contacts = whatsapp_search_contacts(query)
+    contacts = whatsapp_search_contacts(query, limit=limit, include_groups=include_groups)
+    return contacts
+
+@mcp.tool()
+def smart_search_contacts(query: str, limit: int = 25, include_groups: bool = False,
+                          similarity_threshold: float = 0.6) -> List[Dict[str, Any]]:
+    """Fuzzy contact search with typo/accent tolerance and a precision threshold.
+
+    Better than search_contacts when the spelling is unclear: only returns
+    matches at or above similarity_threshold.
+
+    Args:
+        query: Search term to match against contact names or phone numbers
+        limit: Maximum number of results to return (default 25)
+        include_groups: Whether to include group chats in results (default False)
+        similarity_threshold: Minimum similarity score, 0.0-1.0 (default 0.6)
+    """
+    contacts = whatsapp_smart_search_contacts(
+        query, limit=limit, include_groups=include_groups,
+        similarity_threshold=similarity_threshold,
+    )
     return contacts
 
 @mcp.tool()
