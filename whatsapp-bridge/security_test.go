@@ -34,7 +34,9 @@ func TestAuthorizeRequest(t *testing.T) {
 		{"rejects missing token", "secret", http.MethodPost, map[string]string{"Content-Type": "application/json"}, http.StatusUnauthorized},
 		{"rejects wrong token", "secret", http.MethodPost, map[string]string{"Content-Type": "application/json", "X-Bridge-Token": "nope"}, http.StatusUnauthorized},
 		{"accepts correct token", "secret", http.MethodPost, map[string]string{"Content-Type": "application/json", "X-Bridge-Token": "secret"}, http.StatusOK},
-		{"accepts when no token configured", "", http.MethodPost, map[string]string{"Content-Type": "application/json"}, http.StatusOK},
+		// bridgeToken is only ever "" if main()'s fail-closed check were bypassed;
+		// authorizeRequest must not treat that as "auth disabled".
+		{"rejects when no token configured", "", http.MethodPost, map[string]string{"Content-Type": "application/json", "X-Bridge-Token": "anything"}, http.StatusUnauthorized},
 	}
 
 	for _, c := range cases {
@@ -105,5 +107,26 @@ func TestValidateMediaPath(t *testing.T) {
 	}
 	if _, err := validateMediaPath(filepath.Join(root, "..", "escape")); err == nil {
 		t.Fatal("traversal escaping the root must be rejected")
+	}
+
+	// Case-variant denylist bypass (macOS APFS / Windows resolve paths
+	// case-insensitively; an exact-match denylist would otherwise miss these).
+	upperSecret := filepath.Join(root, "ID_RSA")
+	if err := os.WriteFile(upperSecret, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateMediaPath(upperSecret); err == nil {
+		t.Fatal("a case-variant sensitive basename (ID_RSA) under the root must be rejected")
+	}
+	upperSSHDir := filepath.Join(root, ".SSH")
+	if err := os.MkdirAll(upperSSHDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	upperSecretInDir := filepath.Join(upperSSHDir, "config")
+	if err := os.WriteFile(upperSecretInDir, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateMediaPath(upperSecretInDir); err == nil {
+		t.Fatal("a case-variant sensitive dir (.SSH) under the root must be rejected")
 	}
 }

@@ -78,13 +78,14 @@ func authorizeRequest(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return false
 	}
-	// Require the shared per-run token when one is configured.
-	if bridgeToken != "" {
-		got := r.Header.Get("X-Bridge-Token")
-		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(bridgeToken)) != 1 {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return false
-		}
+	// Require the shared per-run token. main() already refuses to start the
+	// server without one (fail-closed), but this checks it too instead of
+	// trusting that invariant from the call site — an empty bridgeToken here
+	// rejects rather than skips auth.
+	got := r.Header.Get("X-Bridge-Token")
+	if bridgeToken == "" || got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(bridgeToken)) != 1 {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return false
 	}
 	return true
 }
@@ -137,13 +138,19 @@ func validateMediaPath(p string) (string, error) {
 		return "", fmt.Errorf("media path %q is outside the allowed root %q", p, root)
 	}
 
+	// Case-fold both sides: macOS (APFS) and Windows resolve paths
+	// case-insensitively, so "ID_RSA" or ".SSH" would otherwise slip past an
+	// exact-match denylist while pointing at the same file/dir the check means
+	// to block.
 	sep := string(filepath.Separator)
+	resolvedLower := strings.ToLower(resolved)
 	for _, deny := range sensitiveDirs {
-		if strings.Contains(resolved, sep+deny+sep) || strings.HasSuffix(resolved, sep+deny) {
+		denyLower := sep + strings.ToLower(deny)
+		if strings.Contains(resolvedLower, denyLower+sep) || strings.HasSuffix(resolvedLower, denyLower) {
 			return "", fmt.Errorf("media path in a sensitive location (%s) is not allowed", deny)
 		}
 	}
-	if sensitiveNames[filepath.Base(resolved)] {
+	if sensitiveNames[strings.ToLower(filepath.Base(resolved))] {
 		return "", fmt.Errorf("media path points at a sensitive file (%s) and is not allowed", filepath.Base(resolved))
 	}
 	return resolved, nil
