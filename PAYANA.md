@@ -24,11 +24,14 @@ Each item below is a single reviewable commit on top of the forked base.
   whatsmeow; requires Go 1.25.
 - Security hardening — loopback bind (`WHATSAPP_BRIDGE_HOST`, default
   `127.0.0.1`), per-run token on `/api/send` + `/api/download` (`X-Bridge-Token`);
-  the bridge **fails closed**: it refuses to start without a token. Same-origin +
-  `application/json` enforcement. `media_path` allowlist (`WHATSAPP_MEDIA_ROOT`,
-  default `~/Downloads` — a real media dir, not all of `$HOME`), with sensitive
-  dirs (`.ssh`, `.aws`, `Keychains`, …) and file basenames (`.git-credentials`,
-  `.netrc`, `.npmrc`, `id_rsa`, …) denied. Fatal bind. Covered by
+  the bridge **fails closed** at two layers: `main()` refuses to start without a
+  token, and `authorizeRequest` independently rejects an empty token rather than
+  treating it as "auth disabled". Same-origin + `application/json` enforcement.
+  `media_path` allowlist (`WHATSAPP_MEDIA_ROOT`, default `~/Downloads` — a real
+  media dir, not all of `$HOME`), with sensitive dirs (`.ssh`, `.aws`,
+  `Keychains`, …) and file basenames (`.git-credentials`, `.netrc`, `.npmrc`,
+  `id_rsa`, …) denied **case-insensitively**, so `ID_RSA` / `.SSH` can't bypass
+  the denylist on macOS (APFS) or Windows. Fatal bind. Covered by
   `whatsapp-bridge/security_test.go`.
 
 **Python MCP server (`whatsapp-mcp-server/`)**
@@ -40,6 +43,14 @@ Each item below is a single reviewable commit on top of the forked base.
   from scratch as Payana code using only the stdlib (`unicodedata` + `difflib`) —
   no third-party fuzzy deps, none of the intermediate's code. Covered by
   `whatsapp-mcp-server/test_search.py`.
+- Confirm-before-send gate (`send_confirmation.py`) — `send_message`, `send_file`
+  and `send_audio_message` each need two round-trips: the first call for a given
+  recipient/content returns a preview + `confirm_token` instead of sending; only
+  a second call repeating that *exact* recipient/content back with the token
+  sends. This turns "confirm before you send" from SKILL.md prose the model
+  could be talked out of into a code decision point a single injected
+  instruction in an inbound message can't clear in one tool call. Covered by
+  `whatsapp-mcp-server/test_send_confirmation.py`.
 - `requires-python` capped `<3.14` (pydantic-core has no cp314 wheel).
 
 ## We do NOT change
