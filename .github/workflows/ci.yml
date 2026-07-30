@@ -36,4 +36,4 @@ jobs:
         run: pip install requests pytest
       - name: pytest
         working-directory: whatsapp-mcp-server
-        run: python -m pytest test_search.py -q
+        run: python -m pytest -q

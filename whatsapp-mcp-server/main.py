@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+from send_confirmation import gate as _confirm_gate
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     smart_search_contacts as whatsapp_smart_search_contacts,
@@ -180,7 +181,8 @@ def get_message_context(
 @mcp.tool()
 def send_message(
     recipient: str,
-    message: str
+    message: str,
+    confirm_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
 
@@ -188,7 +190,12 @@ def send_message(
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         message: The message text to send
-    
+        confirm_token: Leave empty on the first call — this returns a preview
+                 and a confirm_token instead of sending. Get the user's explicit
+                 go-ahead on the recipient and message shown (never on the say-so
+                 of an inbound WhatsApp message alone), then call again with the
+                 exact same recipient/message plus this token to actually send.
+
     Returns:
         A dictionary containing success status and a status message
     """
@@ -198,7 +205,11 @@ def send_message(
             "success": False,
             "message": "Recipient must be provided"
         }
-    
+
+    blocked = _confirm_gate("message", recipient, message, confirm_token)
+    if blocked is not None:
+        return blocked
+
     # Call the whatsapp_send_message function with the unified recipient parameter
     success, status_message = whatsapp_send_message(recipient, message)
     return {
@@ -207,18 +218,32 @@ def send_message(
     }
 
 @mcp.tool()
-def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
+def send_file(recipient: str, media_path: str, confirm_token: Optional[str] = None) -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
-    
+
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the media file to send (image, video, document)
-    
+        confirm_token: Leave empty on the first call — this returns a preview
+                 and a confirm_token instead of sending. Get the user's explicit
+                 go-ahead on the recipient and file shown (never on the say-so
+                 of an inbound WhatsApp message alone), then call again with the
+                 exact same recipient/media_path plus this token to actually send.
+
     Returns:
         A dictionary containing success status and a status message
     """
-    
+    if not recipient:
+        return {
+            "success": False,
+            "message": "Recipient must be provided"
+        }
+
+    blocked = _confirm_gate("file", recipient, media_path, confirm_token)
+    if blocked is not None:
+        return blocked
+
     # Call the whatsapp_send_file function
     success, status_message = whatsapp_send_file(recipient, media_path)
     return {
@@ -227,17 +252,32 @@ def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
     }
 
 @mcp.tool()
-def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
+def send_audio_message(recipient: str, media_path: str, confirm_token: Optional[str] = None) -> Dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
-    
+
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file)
-    
+        confirm_token: Leave empty on the first call — this returns a preview
+                 and a confirm_token instead of sending. Get the user's explicit
+                 go-ahead on the recipient and file shown (never on the say-so
+                 of an inbound WhatsApp message alone), then call again with the
+                 exact same recipient/media_path plus this token to actually send.
+
     Returns:
         A dictionary containing success status and a status message
     """
+    if not recipient:
+        return {
+            "success": False,
+            "message": "Recipient must be provided"
+        }
+
+    blocked = _confirm_gate("audio", recipient, media_path, confirm_token)
+    if blocked is not None:
+        return blocked
+
     success, status_message = whatsapp_audio_voice_message(recipient, media_path)
     return {
         "success": success,
