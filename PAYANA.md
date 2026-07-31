@@ -57,9 +57,16 @@ Each item below is a single reviewable commit on top of the forked base.
   `Keychains`, …) and file basenames (`.git-credentials`, `.netrc`, `.npmrc`,
   `id_rsa`, …) denied **case-insensitively**, so `ID_RSA` / `.SSH` can't bypass
   the denylist on macOS (APFS) or Windows. Fatal bind, raised before pairing
-  rather than after it, so a port collision (the default 8080 is a busy port on
-  a dev machine) surfaces immediately. Covered by
+  rather than after it, so a real collision surfaces immediately. Covered by
   `whatsapp-bridge/security_test.go` and `whatsapp-bridge/pairing_test.go`.
+
+  Note what the loopback bind does *not* protect against: on macOS/BSD, binding
+  `127.0.0.1:8080` succeeds while another process holds the wildcard `*:8080`,
+  and the more specific bind then receives every loopback connection. With the
+  default port that means the bridge silently takes `localhost:8080` away from
+  whatever else was serving it (on a Payana dev machine, agentic), with no error
+  on either side. A quieter default port would avoid it; documenting it does not,
+  since the failure gives no hint where to look.
 
 **Python MCP server (`whatsapp-mcp-server/`)**
 - Env-driven store/bridge config (`WHATSAPP_STORE_DIR`, host/port, token) so the
