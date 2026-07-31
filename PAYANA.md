@@ -16,8 +16,27 @@ Each item below is a single reviewable commit on top of the forked base.
 **Go bridge (`whatsapp-bridge/`)**
 - `handleMessage` dedup guard — preserves history-sync timestamps when the
   bridge reconnects and WhatsApp re-delivers old messages as fresh events.
-- `WA_QR_RAW:<code>` line at pairing — lets the `whatsapp-mcp` skill render the
-  QR as a Claude Artifact instead of unreadable terminal ASCII.
+- Pairing that doesn't race the user (`whatsapp-bridge/pairing.go`). WhatsApp
+  issues six codes — 60s for the first, 20s each after — and closes the login
+  socket when they run out, a ~160s window. Upstream prints each code to the
+  terminal and gives up when the window closes, so a late scan fails with the
+  phone's generic "Check your connection and try again", which names the wrong
+  cause. Three changes:
+  - **The window never closes.** When the codes run out, the bridge reconnects
+    and requests a fresh set, indefinitely, so a live code is always on offer.
+  - **A loopback pairing page** (`GET /qr`) renders the current QR and refreshes
+    itself as codes rotate: open it once, scan whenever. Token-gated like the
+    rest of the API — a pairing code is a credential, since whoever scans it
+    links *their* device to the user's account — with the token in the query
+    string (a browser can't send headers), `no-store` + `no-referrer`, and the
+    code dropped from the state the moment the account links. `/qr/status`
+    carries only the rotation timing, never the raw code.
+  - **Linking by phone number** (`WHATSAPP_PAIR_PHONE`) via whatsmeow's
+    `PairPhone`, emitted as `WA_PAIR_CODE:<code>` — an 8-character code that can
+    be read out loud, with no camera and no 20s scramble.
+  `WA_QR_RAW:<code>` is still printed for tooling that greps the log; the ASCII
+  QR now prints only when stdout is a TTY, since under the launcher stdout is a
+  log file where a 40-line block per code buried every other line.
 - whatsmeow bump (+ `context` API adaptations) — the version upstream pins
   reports a client version WhatsApp now rejects at connect time
   (`405 client outdated`), so it never reaches pairing. Bumped to a current
@@ -31,8 +50,10 @@ Each item below is a single reviewable commit on top of the forked base.
   media dir, not all of `$HOME`), with sensitive dirs (`.ssh`, `.aws`,
   `Keychains`, …) and file basenames (`.git-credentials`, `.netrc`, `.npmrc`,
   `id_rsa`, …) denied **case-insensitively**, so `ID_RSA` / `.SSH` can't bypass
-  the denylist on macOS (APFS) or Windows. Fatal bind. Covered by
-  `whatsapp-bridge/security_test.go`.
+  the denylist on macOS (APFS) or Windows. Fatal bind, raised before pairing
+  rather than after it, so a port collision (the default 8080 is a busy port on
+  a dev machine) surfaces immediately. Covered by
+  `whatsapp-bridge/security_test.go` and `whatsapp-bridge/pairing_test.go`.
 
 **Python MCP server (`whatsapp-mcp-server/`)**
 - Env-driven store/bridge config (`WHATSAPP_STORE_DIR`, host/port, token) so the

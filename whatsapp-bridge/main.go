@@ -18,7 +18,6 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/mdp/qrterminal"
 
 	"bytes"
 
@@ -700,7 +699,11 @@ func extractDirectPathFromURL(url string) string {
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int, pairState *pairingState) {
+	// Payana: the loopback pairing page lives on the same listener, so it is
+	// reachable while the account is still being linked.
+	registerPairingHandlers(pairState)
+
 	// Handler for sending messages
 	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		// Payana: enforce POST + same-origin + JSON + per-run token before doing anything.
@@ -888,44 +891,22 @@ func main() {
 		}
 	})
 
-	// Create channel to track connection success
-	connected := make(chan bool, 1)
+	// Payana: the code currently offered to the user, shared with the /qr page.
+	pairState := newPairingState()
+
+	// Payana: bring the API and the pairing page up before linking, so the page
+	// is reachable while the user links and a failed bind is fatal immediately
+	// instead of after the pairing attempt.
+	startRESTServer(client, messageStore, bridgePort, pairState)
 
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
-		// No ID stored, this is a new client, need to pair with phone
-		qrChan, _ := client.GetQRChannel(context.Background())
-		err = client.Connect()
-		if err != nil {
-			logger.Errorf("Failed to connect: %v", err)
+		// No ID stored: link the account, offering codes until the user acts.
+		if err := runPairing(context.Background(), client, logger, pairState); err != nil {
+			logger.Errorf("Pairing failed: %v", err)
 			return
 		}
-
-		// Print QR code for pairing with phone
-		for evt := range qrChan {
-			if evt.Event == "code" {
-				fmt.Println("\nScan this QR code with your WhatsApp app:")
-				// Payana: emit the raw pairing string on its own line so the
-				// whatsapp-mcp skill can grep it and render a legible QR as a
-				// Claude Artifact instead of relying on terminal ASCII, which
-				// rarely renders correctly. The bridge log this lands in is
-				// written 0600 under the per-user cache dir by the launcher.
-				fmt.Printf("WA_QR_RAW:%s\n", evt.Code)
-				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
-			} else if evt.Event == "success" {
-				connected <- true
-				break
-			}
-		}
-
-		// Wait for connection
-		select {
-		case <-connected:
-			fmt.Println("\nSuccessfully connected and authenticated!")
-		case <-time.After(3 * time.Minute):
-			logger.Errorf("Timeout waiting for QR code scan")
-			return
-		}
+		fmt.Println("\nSuccessfully connected and authenticated!")
 	} else {
 		// Already logged in, just connect
 		err = client.Connect()
@@ -933,7 +914,7 @@ func main() {
 			logger.Errorf("Failed to connect: %v", err)
 			return
 		}
-		connected <- true
+		pairState.setLinked()
 	}
 
 	// Wait a moment for connection to stabilize
@@ -945,9 +926,6 @@ func main() {
 	}
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
-
-	// Start REST API server (Payana: port is env-configurable, default 8080)
-	startRESTServer(client, messageStore, bridgePort)
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
