@@ -97,14 +97,26 @@ const pairingPageHTML = `<!doctype html>
       'tener que volver a escanear.</p>';
   }
 
+  function exhausted(){
+    document.getElementById('card').className = 'card done';
+    document.getElementById('card').innerHTML =
+      '<h1>Se agotaron los códigos</h1>' +
+      '<p>El bridge dejó de pedirle códigos nuevos a WhatsApp para no ganarse un ' +
+      'bloqueo temporal. Reinícialo cuando tengas el teléfono a mano y vuelve a ' +
+      'abrir esta página.</p>';
+  }
+
   function tick(){
     fetch('/qr/status?t=' + encodeURIComponent(token), {cache:'no-store'})
       .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function(s){
         if (s.linked) { linked(); return; }
+        if (s.exhausted) { exhausted(); return; }
 
+        // Shown verbatim: WhatsApp already returns it grouped (ABCD-EFGH), and
+        // re-grouping it here mangles the separator it came with.
         if (s.pair_code) {
-          paircode.textContent = s.pair_code.replace(/(.{4})(?=.)/g, '$1-');
+          paircode.textContent = s.pair_code;
           codebox.hidden = false;
         }
 

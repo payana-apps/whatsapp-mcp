@@ -10,9 +10,11 @@ package main
 //
 // Two changes make linking a non-event:
 //
-//   - The window never closes. When the codes run out we reconnect and request a
-//     fresh set, so the bridge keeps offering a live code until the account is
-//     linked instead of going quiet and bailing out three minutes later.
+//   - The window stays open long enough to be human. When the codes run out we
+//     reconnect and request a fresh set, so a live code is on offer for ~20
+//     minutes instead of ~160 seconds. Bounded, and with backoff between rounds:
+//     asking forever is how WhatsApp comes back with "Can't link new devices
+//     right now", a throttle that outlives the session that earned it.
 //
 //   - The code reaches the user without a middleman. `runPairing` publishes the
 //     current QR to a loopback page (`/qr`) that refreshes itself as codes
@@ -42,13 +44,14 @@ import (
 // pairingState holds the code currently offered to the user. runPairing writes
 // it; the /qr handlers read it.
 type pairingState struct {
-	mu       sync.Mutex
-	qrCode   string
-	issued   time.Time
-	ttl      time.Duration
-	pairCode string
-	linked   bool
-	cycle    int
+	mu        sync.Mutex
+	qrCode    string
+	issued    time.Time
+	ttl       time.Duration
+	pairCode  string
+	linked    bool
+	exhausted bool
+	cycle     int
 }
 
 func newPairingState() *pairingState {
@@ -75,6 +78,15 @@ func (s *pairingState) setCycle(n int) {
 	s.cycle = n
 }
 
+// setExhausted records that the bridge gave up asking, so the page can say so
+// instead of showing a stale code that will never work.
+func (s *pairingState) setExhausted() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exhausted = true
+	s.qrCode, s.pairCode = "", ""
+}
+
 // setLinked marks the account linked and drops the codes — nothing should serve
 // a pairing credential once it can no longer be used.
 func (s *pairingState) setLinked() {
@@ -85,23 +97,27 @@ func (s *pairingState) setLinked() {
 }
 
 type pairingSnapshot struct {
-	Linked   bool   `json:"linked"`
-	HasCode  bool   `json:"has_code"`
-	PairCode string `json:"pair_code,omitempty"`
-	AgeMS    int64  `json:"age_ms"`
-	TTLMS    int64  `json:"ttl_ms"`
-	Cycle    int    `json:"cycle"`
+	Linked bool `json:"linked"`
+	// Exhausted means the bridge stopped asking for codes; linking needs a
+	// restart. Distinct from "no code yet", which resolves on its own.
+	Exhausted bool   `json:"exhausted"`
+	HasCode   bool   `json:"has_code"`
+	PairCode  string `json:"pair_code,omitempty"`
+	AgeMS     int64  `json:"age_ms"`
+	TTLMS     int64  `json:"ttl_ms"`
+	Cycle     int    `json:"cycle"`
 }
 
 func (s *pairingState) snapshot() (pairingSnapshot, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap := pairingSnapshot{
-		Linked:   s.linked,
-		HasCode:  s.qrCode != "",
-		PairCode: s.pairCode,
-		TTLMS:    s.ttl.Milliseconds(),
-		Cycle:    s.cycle,
+		Linked:    s.linked,
+		Exhausted: s.exhausted,
+		HasCode:   s.qrCode != "",
+		PairCode:  s.pairCode,
+		TTLMS:     s.ttl.Milliseconds(),
+		Cycle:     s.cycle,
 	}
 	if !s.issued.IsZero() {
 		snap.AgeMS = time.Since(s.issued).Milliseconds()
@@ -236,13 +252,45 @@ func runPairing(ctx context.Context, client *whatsmeow.Client, logger waLog.Logg
 		// The codes ran out and WhatsApp closed the login socket. Upstream gives
 		// up here; instead reconnect for a fresh set so a user who arrives late
 		// still finds a live code on the page.
-		logger.Infof("Pairing codes for round %d expired without a scan; requesting a fresh set", cycle)
 		client.Disconnect()
+
+		// Asking again immediately, forever, is how you get WhatsApp to answer
+		// "Can't link new devices right now" — a server-side throttle that no
+		// longer has anything to do with this bridge. So back off between rounds
+		// and stop after enough of them that nobody is at the keyboard.
+		if cycle >= maxPairingRounds {
+			state.setExhausted()
+			return fmt.Errorf("no one linked the account after %d rounds of pairing codes; "+
+				"restart the bridge when you are ready to link (asking WhatsApp for more "+
+				"codes right now risks a temporary block on linking new devices)", cycle)
+		}
+		wait := pairingBackoff(cycle)
+		logger.Infof("Pairing codes for round %d expired without a scan; asking for a fresh set in %s", cycle, wait)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(wait):
 		}
+	}
+}
+
+// maxPairingRounds bounds how long the bridge keeps asking. Six codes plus the
+// backoff below is roughly twenty minutes of a live code on the page, which is
+// far beyond "I'll grab my phone" and well short of hammering the endpoint.
+var maxPairingRounds = getenvIntDefault("WHATSAPP_PAIR_MAX_ROUNDS", 8)
+
+// pairingBackoff spaces out the rounds: the first few come quickly, because the
+// common case is a user who is right there and just missed the window.
+func pairingBackoff(cycle int) time.Duration {
+	switch {
+	case cycle <= 2:
+		return time.Second
+	case cycle <= 4:
+		return 15 * time.Second
+	case cycle <= 6:
+		return time.Minute
+	default:
+		return 3 * time.Minute
 	}
 }
 

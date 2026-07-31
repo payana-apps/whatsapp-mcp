@@ -188,3 +188,40 @@ func TestPairClientDisplayName(t *testing.T) {
 		t.Fatalf("display name %q is not in the required \"Browser (OS)\" form", name)
 	}
 }
+
+func TestPairingBackoffGrows(t *testing.T) {
+	// Rounds get further apart: the early ones serve a user who just missed the
+	// window, the late ones keep the bridge from hammering the pairing endpoint
+	// into a "Can't link new devices right now" throttle.
+	prev := time.Duration(0)
+	for cycle := 1; cycle <= 8; cycle++ {
+		got := pairingBackoff(cycle)
+		if got < prev {
+			t.Fatalf("backoff shrank at round %d: %s after %s", cycle, got, prev)
+		}
+		prev = got
+	}
+	if pairingBackoff(8) < time.Minute {
+		t.Fatalf("late rounds are too eager: %s", pairingBackoff(8))
+	}
+}
+
+func TestExhaustedDropsCodes(t *testing.T) {
+	s := newPairingState()
+	s.setQR("2@abc", 20*time.Second)
+	s.setPairCode("ABCD1234")
+
+	s.setExhausted()
+	snap, code := s.snapshot()
+	if !snap.Exhausted {
+		t.Fatal("expected exhausted")
+	}
+	// A code left on the page after the bridge gave up is a code that will never
+	// work — the page has to be able to say so instead of showing it.
+	if snap.HasCode || code != "" || snap.PairCode != "" {
+		t.Fatalf("exhausted state still offers a code: %+v / %q", snap, code)
+	}
+	if snap.Linked {
+		t.Fatal("exhausted is not linked")
+	}
+}

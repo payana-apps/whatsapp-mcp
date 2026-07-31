@@ -22,8 +22,14 @@ Each item below is a single reviewable commit on top of the forked base.
   terminal and gives up when the window closes, so a late scan fails with the
   phone's generic "Check your connection and try again", which names the wrong
   cause. Three changes:
-  - **The window never closes.** When the codes run out, the bridge reconnects
-    and requests a fresh set, indefinitely, so a live code is always on offer.
+  - **The window stays open long enough to be human.** When the codes run out,
+    the bridge reconnects and requests a fresh set — bounded
+    (`WHATSAPP_PAIR_MAX_ROUNDS`, default 8) and with growing backoff between
+    rounds, so a live code is on offer for ~20 minutes instead of ~160 seconds.
+    The bound is not cosmetic: asking indefinitely earns a server-side "Can't
+    link new devices right now" throttle that outlives the session that caused
+    it. When the rounds run out the page says so, instead of showing a code that
+    can never work.
   - **A loopback pairing page** (`GET /qr`) renders the current QR and refreshes
     itself as codes rotate: open it once, scan whenever. Token-gated like the
     rest of the API — a pairing code is a credential, since whoever scans it
