@@ -42,8 +42,11 @@ const pairingPageHTML = `<!doctype html>
 <meta name="referrer" content="no-referrer">
 <title>Vincular WhatsApp · Payana</title>
 <style>
-  :root{ --blue:#0E22F1; --ink:#030730; --card:#fff; --muted:#5b6478; --line:#e6e8f6;
-         --ground:#0E22F1; --warn:#B45309; --warnbg:#FEF6E7; --ok:#12A150; }
+  /* Payana Brand Kit (Design System v1.8) design tokens: color-primary,
+     color-text-muted-accessible, color-error, color-success. --warnbg is a
+     light tint of color-error — the kit defines no explicit token for it. */
+  :root{ --blue:#0c1dca; --ink:#030730; --card:#fff; --muted:#6b6d7a; --line:#e6e8f6;
+         --ground:#0c1dca; --warn:#df6b10; --warnbg:#fbeee3; --ok:#00ab59; }
   @media (prefers-color-scheme:dark){ :root{ --ground:#030730; } }
   *{ box-sizing:border-box; }
   body{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
@@ -84,7 +87,8 @@ const pairingPageHTML = `<!doctype html>
   input{ flex:1; min-width:0; font:inherit; font-size:15px; padding:11px 13px; color:var(--ink);
      border:1px solid var(--line); border-radius:11px; background:#fff; }
   input:focus{ outline:2px solid var(--blue); outline-offset:-1px; }
-  .btn{ font:inherit; font-size:14px; font-weight:600; border:0; cursor:pointer; border-radius:11px;
+  /* radius-sm (6px) — the kit's button radius, not a pill. */
+  .btn{ font:inherit; font-size:14px; font-weight:600; border:0; cursor:pointer; border-radius:6px;
      padding:11px 16px; background:var(--blue); color:#fff; }
   .btn[disabled]{ opacity:.45; cursor:default; }
   .btn.ghost{ background:#f2f3fb; color:var(--ink); }
