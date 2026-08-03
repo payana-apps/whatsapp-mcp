@@ -308,10 +308,14 @@ const pairingPageHTML = `<!doctype html>
           statusText.textContent = 'Código nuevo en ' + secs + ' s — o pídelo ahora';
           qrretry.hidden = false;
         } else if (s.expired) {
-          showSpent('El código venció. Pidiendo uno nuevo…');
+          // Mid-round rotation: the next code is seconds away. No button here —
+          // a press during a round is only consumed at the NEXT backoff, where
+          // it cancels a wait that exists to keep WhatsApp from throttling the
+          // account. The button belongs to the between-rounds branch above.
+          showSpent('El código venció. Llega uno nuevo en un momento…');
           status.className = 'status warn';
-          statusText.textContent = 'El código de arriba ya no sirve';
-          qrretry.hidden = false;
+          statusText.textContent = 'Renovando el código…';
+          qrretry.hidden = true;
         } else {
           status.className = 'status';
           statusText.textContent = 'Pidiendo un código nuevo…';

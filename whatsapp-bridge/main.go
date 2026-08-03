@@ -904,7 +904,16 @@ func main() {
 		// No ID stored: link the account, offering codes until the user acts.
 		if err := runPairing(context.Background(), client, logger, pairState); err != nil {
 			logger.Errorf("Pairing failed: %v", err)
-			return
+			// Exiting here would take the pairing page down with the process,
+			// so the user who walks back to a browser tab gets "is the bridge
+			// still running?" instead of the reason it stopped. Keep serving
+			// the page: it is where they are looking, and it can explain that
+			// the codes ran out and a restart is what's needed. Nothing else
+			// works in this state — the API refuses unlinked calls — and the
+			// skill kills the process before starting a new one.
+			fmt.Println("WA_PAIRING_STOPPED:codes-exhausted")
+			fmt.Println("Leaving the pairing page up so it can explain; restart the bridge to link.")
+			select {}
 		}
 		fmt.Println("\nSuccessfully connected and authenticated!")
 	} else {

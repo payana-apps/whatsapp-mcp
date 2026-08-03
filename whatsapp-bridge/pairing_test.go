@@ -13,12 +13,12 @@ import (
 // user's account. The page that serves it must be no easier to reach than the
 // rest of the API, even though a browser GET can't carry the token header.
 func TestAuthorizePairingRequest(t *testing.T) {
-	saved := bridgeToken
-	defer func() { bridgeToken = saved }()
+	saved := pairingToken
+	defer func() { pairingToken = saved }()
 
 	cases := []struct {
 		name   string
-		token  string // configured server token
+		token  string // configured pairing token
 		method string
 		query  string
 		want   int // 200 means authorized
@@ -32,7 +32,7 @@ func TestAuthorizePairingRequest(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			bridgeToken = c.token
+			pairingToken = c.token
 			w := httptest.NewRecorder()
 			ok := authorizePairingRequest(w, httptest.NewRequest(c.method, "/qr"+c.query, nil))
 			if c.want == http.StatusOK {
@@ -54,9 +54,9 @@ func TestAuthorizePairingRequest(t *testing.T) {
 // The URL carries the token in the query string, so it must not be cached or
 // leak through a Referer header.
 func TestPairingResponseHeaders(t *testing.T) {
-	saved := bridgeToken
-	defer func() { bridgeToken = saved }()
-	bridgeToken = "secret"
+	saved := pairingToken
+	defer func() { pairingToken = saved }()
+	pairingToken = "secret"
 
 	w := httptest.NewRecorder()
 	authorizePairingRequest(w, httptest.NewRequest(http.MethodGet, "/qr?t=secret", nil))
@@ -65,6 +65,59 @@ func TestPairingResponseHeaders(t *testing.T) {
 	}
 	if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
 		t.Errorf("Referrer-Policy = %q, want no-referrer", got)
+	}
+}
+
+// The pairing token rides in a query string, so it ends up in browser history,
+// in whatever the user pasted the URL into, and in the agent transcript that
+// opened it. It must therefore be worth strictly less than the bridge token:
+// linking only, never the API that sends messages as the user.
+func TestPairingTokenDoesNotAuthorizeTheAPI(t *testing.T) {
+	savedBridge, savedPairing := bridgeToken, pairingToken
+	defer func() { bridgeToken, pairingToken = savedBridge, savedPairing }()
+	bridgeToken, pairingToken = "bridge-secret", "pairing-secret"
+
+	// The pairing credential must not open /api/send or /api/download.
+	req := httptest.NewRequest(http.MethodPost, "/api/send", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Bridge-Token", pairingToken)
+	w := httptest.NewRecorder()
+	if authorizeRequest(w, req) {
+		t.Fatal("the pairing token authorized the send API")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+
+	// And the reverse: the bridge token is not a way into the pairing page, so
+	// the two never collapse back into one secret by accident.
+	w = httptest.NewRecorder()
+	if authorizePairingRequest(w, httptest.NewRequest(http.MethodGet, "/qr?t="+bridgeToken, nil)) {
+		t.Fatal("the bridge token authorized the pairing page")
+	}
+
+	// They must actually be different values.
+	if bridgeToken == pairingToken {
+		t.Fatal("the two tokens are the same secret")
+	}
+}
+
+// A cross-origin POST carrying no custom header is a CORS simple request: the
+// browser sends it and only hides the response. Without an Origin check, a page
+// the user happens to have open could drive pairing on their behalf.
+func TestPairingActionsRejectCrossOrigin(t *testing.T) {
+	saved := pairingToken
+	defer func() { pairingToken = saved }()
+	pairingToken = "secret"
+
+	req := httptest.NewRequest(http.MethodPost, "/qr/retry?t=secret", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	w := httptest.NewRecorder()
+	if authorizePairingAction(w, req) {
+		t.Fatal("a cross-origin pairing action was authorized")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
 	}
 }
 
@@ -99,9 +152,9 @@ func TestPairingStateSnapshot(t *testing.T) {
 }
 
 func TestQRPNGHandler(t *testing.T) {
-	savedToken := bridgeToken
-	defer func() { bridgeToken = savedToken }()
-	bridgeToken = "secret"
+	savedToken := pairingToken
+	defer func() { pairingToken = savedToken }()
+	pairingToken = "secret"
 
 	state := newPairingState()
 	mux := http.NewServeMux()
@@ -330,9 +383,9 @@ func TestPairingPageOffersBothMethodsAndBranding(t *testing.T) {
 
 // Exercises the handlers the bridge actually serves, not copies of them.
 func TestPairingEndpoints(t *testing.T) {
-	saved := bridgeToken
-	defer func() { bridgeToken = saved }()
-	bridgeToken = "secret"
+	saved := pairingToken
+	defer func() { pairingToken = saved }()
+	pairingToken = "secret"
 
 	state := newPairingState()
 	mux := http.NewServeMux()
@@ -363,7 +416,9 @@ func TestPairingEndpoints(t *testing.T) {
 		t.Errorf("/qr/pair-phone with a bad token = %d, want 401", w.Code)
 	}
 
-	// The button reaches the pairing loop.
+	// The button reaches the pairing loop — but only from the state where it is
+	// offered, which is between rounds.
+	state.setWaiting(time.Now().Add(time.Minute))
 	if w := do(http.MethodPost, "/qr/retry?t=secret"); w.Code != http.StatusOK || errorOf(w) != "" {
 		t.Fatalf("/qr/retry = %d %s", w.Code, w.Body)
 	}
@@ -396,6 +451,34 @@ func TestPairingEndpoints(t *testing.T) {
 		}
 	default:
 		t.Fatal("/qr/pair-phone did not reach the pairing loop")
+	}
+
+	// Mid-round, retry must be refused and must NOT reach the loop. The loop
+	// isn't waiting on anything during a round, so a queued press would be
+	// consumed at the next backoff and cancel it — one press per round
+	// collapses the eight spaced rounds into a burst, which is how WhatsApp
+	// decides to throttle linking on this account. Live code, no waiting
+	// window: exactly the state where the old code accepted the press.
+	state.setQR("2@live", time.Minute)
+	if got := errorOf(do(http.MethodPost, "/qr/retry?t=secret")); got == "" {
+		t.Error("retry during a live round should be refused")
+	}
+	select {
+	case <-state.retryReq:
+		t.Fatal("a mid-round retry reached the pairing loop and will cancel a later backoff")
+	default:
+	}
+
+	// Between rounds it is exactly what the user wants: skip a wait meant for
+	// someone who walked away.
+	state.setWaiting(time.Now().Add(3 * time.Minute))
+	if w := do(http.MethodPost, "/qr/retry?t=secret"); errorOf(w) != "" {
+		t.Fatalf("retry between rounds should be accepted: %s", w.Body)
+	}
+	select {
+	case <-state.retryReq:
+	default:
+		t.Fatal("a between-rounds retry never reached the pairing loop")
 	}
 
 	// Once the bridge has given up, the page must not be able to talk it into

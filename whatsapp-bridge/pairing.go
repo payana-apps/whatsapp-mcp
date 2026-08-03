@@ -215,8 +215,17 @@ func (s *pairingState) snapshot() (pairingSnapshot, string) {
 	}
 	// A held code past its TTL is not a code. Report it as expired and refuse
 	// to hand it out, so the page can't render a QR nobody can scan.
+	//
+	// A missing TTL is treated as the shortest one WhatsApp uses rather than as
+	// "never expires": guessing long here fails open into exactly the bug this
+	// guard exists to prevent, and guessing short only costs a redundant
+	// refresh.
 	code := s.qrCode
-	if code != "" && s.ttl > 0 && time.Since(s.issued) >= s.ttl {
+	ttl := s.ttl
+	if ttl <= 0 {
+		ttl = defaultPairingTTL
+	}
+	if code != "" && time.Since(s.issued) >= ttl {
 		snap.Expired, snap.HasCode = true, false
 		code = ""
 	}
@@ -228,10 +237,32 @@ func (s *pairingState) snapshot() (pairingSnapshot, string) {
 	return snap, code
 }
 
-// pairingURL is the address to hand the user (or `open`) for the QR page. The
-// token travels in the query string because a browser can't set headers.
+// pairingToken authorizes the pairing page only — never /api/send or
+// /api/download.
+//
+// The page's token has to ride in a query string, because a browser navigating
+// to a URL can't set a header. That URL then lands in browser history, in
+// whatever the user pasted it into, and in the agent transcript that opened it.
+// Handing it the bridge token would make every one of those places a copy of
+// the credential that sends WhatsApp messages as the user. This one is minted
+// per run, grants nothing but linking, and is worthless the moment the account
+// is linked.
+var pairingToken = mustPairingToken()
+
+func mustPairingToken() string {
+	tok, err := newToken()
+	if err != nil {
+		// Without a token the page would have to be served unauthenticated,
+		// and a pairing code is a credential: whoever scans it links THEIR
+		// device to this account. Refuse to run instead.
+		panic(fmt.Sprintf("could not mint a pairing token: %v", err))
+	}
+	return tok
+}
+
+// pairingURL is the address to hand the user (or `open`) for the QR page.
 func pairingURL() string {
-	return fmt.Sprintf("http://%s:%d/qr?t=%s", bridgeHost, bridgePort, bridgeToken)
+	return fmt.Sprintf("http://%s:%d/qr?t=%s", bridgeHost, bridgePort, pairingToken)
 }
 
 // authorizePairingRequest gates the pairing page. The header-based guards in
@@ -256,8 +287,17 @@ func authorizePairingMethod(w http.ResponseWriter, r *http.Request, method strin
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return false
 	}
+	// The page's own fetch() calls are same-origin and send no Origin header.
+	// A cross-origin POST with no custom header is a CORS "simple request" —
+	// it executes even though the attacker can't read the reply, so without
+	// this a page the user happens to have open could drive pairing. Same
+	// guard the REST API applies; the page just can't use the header form.
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "Cross-origin requests are not allowed", http.StatusForbidden)
+		return false
+	}
 	got := r.URL.Query().Get("t")
-	if bridgeToken == "" || got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(bridgeToken)) != 1 {
+	if pairingToken == "" || got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(pairingToken)) != 1 {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return false
 	}
@@ -312,6 +352,17 @@ func registerPairingHandlersOn(mux *http.ServeMux, state *pairingState) {
 			// throttle the cap exists to avoid.
 			json.NewEncoder(w).Encode(map[string]string{
 				"error": "the bridge stopped asking for codes; restart it when you have the phone at hand",
+			})
+			return
+		}
+		// Only meaningful between rounds. Mid-round the loop isn't waiting on
+		// anything, so the press would be consumed at the NEXT backoff and
+		// cancel it — collapsing the spacing that keeps WhatsApp from
+		// throttling this account. The page hides the button here; this
+		// refuses it regardless of what the page does.
+		if snap.RetryInMS <= 0 {
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "a fresh code is already on its way",
 			})
 			return
 		}
@@ -429,6 +480,16 @@ func runPairing(ctx context.Context, client *whatsmeow.Client, logger waLog.Logg
 		}
 		state.setCycle(cycle)
 
+		// Drop any retry press left over from an earlier round. The button is
+		// only offered between rounds, but a press that raced the arrival of a
+		// fresh round would otherwise sit in the buffer and cancel a LATER
+		// backoff — turning the eight spaced-out rounds into a burst, which is
+		// exactly how WhatsApp decides to throttle linking on this account.
+		select {
+		case <-state.retryReq:
+		default:
+		}
+
 		qrChan, err := client.GetQRChannel(ctx)
 		if err != nil {
 			return fmt.Errorf("could not open the pairing channel: %w", err)
@@ -479,6 +540,11 @@ func runPairing(ctx context.Context, client *whatsmeow.Client, logger waLog.Logg
 		}
 	}
 }
+
+// defaultPairingTTL is the fallback lifetime for a code whose event carried no
+// timeout — the shortest WhatsApp uses, so the guess can only expire a code
+// early, never serve a dead one.
+const defaultPairingTTL = 20 * time.Second
 
 // maxPairingRounds bounds how long the bridge keeps asking. Six codes plus the
 // backoff below is roughly twenty minutes of a live code on the page, which is
