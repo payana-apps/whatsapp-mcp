@@ -206,6 +206,211 @@ func TestPairingBackoffGrows(t *testing.T) {
 	}
 }
 
+// The regression this whole state machine exists for: a code past its TTL is
+// dead, and the page must never be handed one to render. Before this, the last
+// code of a round stayed in the state through the entire backoff — up to three
+// minutes of a QR on screen that could not scan, under a countdown pinned at
+// zero, while the phone blamed the user's connection.
+func TestExpiredCodeIsNotOffered(t *testing.T) {
+	s := newPairingState()
+	s.setQR("2@abc", 40*time.Millisecond)
+
+	snap, code := s.snapshot()
+	if !snap.HasCode || snap.Expired || code == "" {
+		t.Fatalf("a fresh code must be offered: %+v / %q", snap, code)
+	}
+
+	time.Sleep(60 * time.Millisecond)
+
+	snap, code = s.snapshot()
+	if !snap.Expired {
+		t.Fatal("a code past its TTL must report as expired")
+	}
+	if snap.HasCode || code != "" {
+		t.Fatalf("expired state still offers a code: %+v / %q", snap, code)
+	}
+}
+
+// Between rounds there is no code at all, and the page needs to know how long
+// the wait is so it can offer to cut it short instead of looking hung.
+func TestWaitingClearsCodesAndCountsDown(t *testing.T) {
+	s := newPairingState()
+	s.setQR("2@abc", time.Minute)
+	s.setPairCode("ABCD1234")
+	s.setSocketLive(true)
+
+	s.setWaiting(time.Now().Add(30 * time.Second))
+
+	snap, code := s.snapshot()
+	if snap.HasCode || code != "" || snap.PairCode != "" {
+		t.Fatalf("waiting state still offers a code: %+v / %q", snap, code)
+	}
+	if snap.RetryInMS <= 0 || snap.RetryInMS > 30_000 {
+		t.Fatalf("retry countdown = %dms, want (0, 30000]", snap.RetryInMS)
+	}
+	// PairPhone needs the login socket, which is gone between rounds.
+	if snap.CanPairPhone {
+		t.Fatal("no live socket between rounds, so the phone path must be closed")
+	}
+}
+
+// A queued request is as good as two: the handlers must never block on a user
+// leaning on a button, and the loop only needs to know that it was asked.
+func TestPairingRequestsAreNonBlocking(t *testing.T) {
+	s := newPairingState()
+
+	if !s.requestRetry() {
+		t.Fatal("first retry request should be accepted")
+	}
+	if s.requestRetry() {
+		t.Fatal("second retry request should coalesce, not block")
+	}
+	if got := <-s.retryReq; got != struct{}{} {
+		t.Fatal("retry request never reached the loop")
+	}
+
+	if !s.requestPhoneCode("573001234567") {
+		t.Fatal("first phone request should be accepted")
+	}
+	if s.requestPhoneCode("573001234567") {
+		t.Fatal("second phone request should coalesce, not block")
+	}
+	if got := <-s.phoneReq; got != "573001234567" {
+		t.Fatalf("phone request = %q, want 573001234567", got)
+	}
+}
+
+func TestNormalizePairPhone(t *testing.T) {
+	// People paste what WhatsApp shows them; the API wants bare digits.
+	cases := map[string]string{
+		"+57 300 123 4567":    "573001234567",
+		"57-300-123-4567":     "573001234567",
+		"(52) 1 462 5091298":  "5214625091298",
+		"573001234567":        "573001234567",
+		"":                    "",
+		"12345":               "", // too short to be a country code plus a number
+		"5730012345678901234": "", // longer than E.164 allows
+		"abc":                 "",
+	}
+	for in, want := range cases {
+		if got := normalizePairPhone(in); got != want {
+			t.Errorf("normalizePairPhone(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The pairing page is the one that has to explain linking, so the markup has to
+// actually carry both methods and the brand it is served under. A page that
+// silently loses one leaves the agent narrating state it can't see.
+func TestPairingPageOffersBothMethodsAndBranding(t *testing.T) {
+	for _, want := range []string{
+		"panelqr",        // scan path
+		"panelphone",     // 8-character-code path
+		"/qr/pair-phone", // requested from the page, not from a bridge restart
+		"/qr/retry",      // regenerate button
+		"Vincular un dispositivo",
+		"Vincular con número de teléfono",
+	} {
+		if !strings.Contains(pairingPageHTML, want) {
+			t.Errorf("pairing page lost %q", want)
+		}
+	}
+	if !strings.Contains(pairingPageHTML, payanaLogoSVG) {
+		t.Error("pairing page is not carrying the Payana wordmark")
+	}
+	// Served from a const with no asset pipeline: anything the browser would go
+	// fetch is a blank box on a machine that can only reach WhatsApp. The SVG
+	// xmlns is a namespace name, not a URL the browser resolves, so it stays.
+	for _, fetched := range []string{`src="http`, `src='http`, `href="http`, `href='http`, `src="//`, `href="//`, "@import"} {
+		if strings.Contains(pairingPageHTML, fetched) {
+			t.Errorf("pairing page fetches an external asset (%s)", fetched)
+		}
+	}
+}
+
+// Exercises the handlers the bridge actually serves, not copies of them.
+func TestPairingEndpoints(t *testing.T) {
+	saved := bridgeToken
+	defer func() { bridgeToken = saved }()
+	bridgeToken = "secret"
+
+	state := newPairingState()
+	mux := http.NewServeMux()
+	registerPairingHandlersOn(mux, state)
+
+	do := func(method, path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(method, path, nil))
+		return w
+	}
+	errorOf := func(w *httptest.ResponseRecorder) string {
+		var body struct {
+			Error string `json:"error"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &body)
+		return body.Error
+	}
+
+	// Both actions change state, so neither may be reachable by a GET, and both
+	// are as token-gated as the rest of the API.
+	if w := do(http.MethodGet, "/qr/retry?t=secret"); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /qr/retry = %d, want 405", w.Code)
+	}
+	if w := do(http.MethodPost, "/qr/retry?t=nope"); w.Code != http.StatusUnauthorized {
+		t.Errorf("/qr/retry with a bad token = %d, want 401", w.Code)
+	}
+	if w := do(http.MethodPost, "/qr/pair-phone?t=nope&phone=573001234567"); w.Code != http.StatusUnauthorized {
+		t.Errorf("/qr/pair-phone with a bad token = %d, want 401", w.Code)
+	}
+
+	// The button reaches the pairing loop.
+	if w := do(http.MethodPost, "/qr/retry?t=secret"); w.Code != http.StatusOK || errorOf(w) != "" {
+		t.Fatalf("/qr/retry = %d %s", w.Code, w.Body)
+	}
+	select {
+	case <-state.retryReq:
+	default:
+		t.Fatal("/qr/retry did not reach the pairing loop")
+	}
+
+	// A malformed number is rejected before it costs a pairing request.
+	if got := errorOf(do(http.MethodPost, "/qr/pair-phone?t=secret&phone=123")); got == "" {
+		t.Error("a too-short number should be refused with a reason")
+	}
+
+	// PairPhone needs the login socket; without one the page is told to wait
+	// rather than handed a button that fails.
+	if got := errorOf(do(http.MethodPost, "/qr/pair-phone?t=secret&phone=%2B57+300+123+4567")); got == "" {
+		t.Error("with no live socket the phone path should explain itself")
+	}
+
+	state.setQR("2@abc", time.Minute)
+	state.setSocketLive(true)
+	if w := do(http.MethodPost, "/qr/pair-phone?t=secret&phone=%2B57+300+123+4567"); errorOf(w) != "" {
+		t.Fatalf("/qr/pair-phone on a live socket: %s", w.Body)
+	}
+	select {
+	case got := <-state.phoneReq:
+		if got != "573001234567" {
+			t.Fatalf("phone reached the loop as %q, want the normalized digits", got)
+		}
+	default:
+		t.Fatal("/qr/pair-phone did not reach the pairing loop")
+	}
+
+	// Once the bridge has given up, the page must not be able to talk it into
+	// asking again — that cap is what keeps WhatsApp from throttling linking.
+	state.setExhausted()
+	if got := errorOf(do(http.MethodPost, "/qr/retry?t=secret")); got == "" {
+		t.Error("retry after exhaustion should be refused")
+	}
+	select {
+	case <-state.retryReq:
+		t.Fatal("retry after exhaustion still reached the pairing loop")
+	default:
+	}
+}
+
 func TestExhaustedDropsCodes(t *testing.T) {
 	s := newPairingState()
 	s.setQR("2@abc", 20*time.Second)
