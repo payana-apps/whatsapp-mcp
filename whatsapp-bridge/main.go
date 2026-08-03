@@ -904,16 +904,26 @@ func main() {
 		// No ID stored: link the account, offering codes until the user acts.
 		if err := runPairing(context.Background(), client, logger, pairState); err != nil {
 			logger.Errorf("Pairing failed: %v", err)
-			// Exiting here would take the pairing page down with the process,
-			// so the user who walks back to a browser tab gets "is the bridge
-			// still running?" instead of the reason it stopped. Keep serving
-			// the page: it is where they are looking, and it can explain that
-			// the codes ran out and a restart is what's needed. Nothing else
-			// works in this state — the API refuses unlinked calls — and the
-			// skill kills the process before starting a new one.
+			// Exiting immediately would take the pairing page down with the
+			// process, so the user who walks back to a browser tab gets "is the
+			// bridge still running?" instead of the reason it stopped. Keep
+			// serving the page for a bounded grace window: it is where they are
+			// looking, and it can explain that the codes ran out and a restart
+			// is what's needed. Nothing else works in this state — the API
+			// refuses unlinked calls — and the skill kills the process before
+			// starting a new one.
+			//
+			// Bounded, not forever: an unattended machine (nobody comes back to
+			// that tab) must not leave this process squatting the port
+			// indefinitely — that is unbounded leaked state with no cleanup.
+			// exhaustedPageGrace is generous enough for someone mid-tab-switch
+			// to read the page, short of "forever".
 			fmt.Println("WA_PAIRING_STOPPED:codes-exhausted")
-			fmt.Println("Leaving the pairing page up so it can explain; restart the bridge to link.")
-			select {}
+			fmt.Printf("Leaving the pairing page up for %s so it can explain; restart the bridge to link.\n", exhaustedPageGrace)
+			time.Sleep(exhaustedPageGrace)
+			fmt.Printf("WA_PAIRING_STOPPED:idle-timeout — exiting after %s with no restart, freeing %s:%d\n",
+				exhaustedPageGrace, bridgeHost, bridgePort)
+			os.Exit(1)
 		}
 		fmt.Println("\nSuccessfully connected and authenticated!")
 	} else {

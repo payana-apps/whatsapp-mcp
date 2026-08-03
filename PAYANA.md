@@ -43,6 +43,15 @@ Each item below is a single reviewable commit on top of the forked base.
   `WA_QR_RAW:<code>` is still printed for tooling that greps the log; the ASCII
   QR now prints only when stdout is a TTY, since under the launcher stdout is a
   log file where a 40-line block per code buried every other line.
+  - **Exiting after pairing gives up, not parking forever.** When the rounds
+    above run out, the process used to `select{}` — deliberately, so the
+    already-open pairing page could keep explaining why linking stopped
+    instead of dying with it. That reasoning was right but unbounded: an
+    abandoned machine left the process squatting `WHATSAPP_BRIDGE_PORT`
+    forever with nothing to shrink it. It now serves that page for a bounded
+    grace window (`WHATSAPP_PAIR_EXHAUSTED_GRACE`, default 10m — parsed by the
+    new `getenvDurationDefault`, covered by `security_test.go`) and then exits,
+    freeing the port for the next run.
 - whatsmeow bump (+ `context` API adaptations) — the version upstream pins
   reports a client version WhatsApp now rejects at connect time
   (`405 client outdated`), so it never reaches pairing. Bumped to a current

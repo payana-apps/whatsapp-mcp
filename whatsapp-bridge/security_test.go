@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func jsonReq(method string, headers map[string]string) *http.Request {
@@ -128,5 +129,29 @@ func TestValidateMediaPath(t *testing.T) {
 	}
 	if _, err := validateMediaPath(upperSecretInDir); err == nil {
 		t.Fatal("a case-variant sensitive dir (.SSH) under the root must be rejected")
+	}
+}
+
+func TestGetenvDurationDefault(t *testing.T) {
+	const key = "WHATSAPP_TEST_DURATION"
+	defer os.Unsetenv(key)
+
+	os.Unsetenv(key)
+	if got := getenvDurationDefault(key, 7*time.Second); got != 7*time.Second {
+		t.Fatalf("unset env: got %v, want the default 7s", got)
+	}
+
+	os.Setenv(key, "45s")
+	if got := getenvDurationDefault(key, 7*time.Second); got != 45*time.Second {
+		t.Fatalf("valid override: got %v, want 45s", got)
+	}
+
+	// An invalid value must fall back to the default rather than panic or
+	// silently zero out — this is a pairing-window knob, and a zeroed grace
+	// period would exit the process immediately after pairing exhausts, right
+	// back to the "page dies before the user can read it" bug this replaced.
+	os.Setenv(key, "not-a-duration")
+	if got := getenvDurationDefault(key, 7*time.Second); got != 7*time.Second {
+		t.Fatalf("invalid override: got %v, want the default 7s", got)
 	}
 }

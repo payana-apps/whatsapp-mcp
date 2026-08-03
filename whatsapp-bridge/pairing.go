@@ -551,6 +551,12 @@ const defaultPairingTTL = 20 * time.Second
 // far beyond "I'll grab my phone" and well short of hammering the endpoint.
 var maxPairingRounds = getenvIntDefault("WHATSAPP_PAIR_MAX_ROUNDS", 8)
 
+// exhaustedPageGrace bounds how long the process stays alive after pairing
+// gives up, just to keep serving the "codes ran out" page. Long enough for
+// someone mid-tab-switch to come back and read it; short of leaving an
+// abandoned process squatting the port forever with nothing to shrink it.
+var exhaustedPageGrace = getenvDurationDefault("WHATSAPP_PAIR_EXHAUSTED_GRACE", 10*time.Minute)
+
 // pairingBackoff spaces out the rounds: the first few come quickly, because the
 // common case is a user who is right there and just missed the window.
 func pairingBackoff(cycle int) time.Duration {
