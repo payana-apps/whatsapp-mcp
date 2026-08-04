@@ -887,7 +887,22 @@ func main() {
 			logger.Infof("Connected to WhatsApp")
 
 		case *events.LoggedOut:
+			// Payana: whatsmeow has already deleted client.Store.ID by the time
+			// this fires (see its connectionevents.go: every LoggedOut dispatch
+			// is paired with a Store.Delete()), so client.Connect() will never
+			// succeed again in this process — only a restart re-enters pairing,
+			// because that is what re-checks Store.ID == nil. Logging a warning
+			// and continuing (the previous behavior) left the process looking
+			// exactly as healthy as a working one: same PID, same log tail
+			// history, REST API still bound and responding — while silently
+			// never capturing another message. That is precisely how a linked
+			// bridge that had been running for a year went unnoticed for six
+			// days: nothing but the corpus going stale said so. Exit loudly
+			// instead so whatever supervises this process (a LaunchAgent, or
+			// the skill's own restart path) starts a fresh one.
 			logger.Warnf("Device logged out, please scan QR code to log in again")
+			fmt.Println("WA_LOGGED_OUT:restart-required")
+			os.Exit(1)
 		}
 	})
 

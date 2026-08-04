@@ -52,6 +52,21 @@ Each item below is a single reviewable commit on top of the forked base.
     grace window (`WHATSAPP_PAIR_EXHAUSTED_GRACE`, default 10m — parsed by the
     new `getenvDurationDefault`, covered by `security_test.go`) and then exits,
     freeing the port for the next run.
+  - **Exiting on a runtime logout, not lingering as a zombie.** whatsmeow
+    itself deletes `client.Store.ID` the moment it dispatches `LoggedOut` (see
+    its `connectionevents.go`), so `client.Connect()` will never succeed again
+    in that process — only a restart re-enters pairing. The old handler only
+    logged a warning and kept running: same PID, same log tail, REST API still
+    bound and answering, while silently never capturing another message. That
+    is exactly how a bridge that had been linked and working for a year went
+    unnoticed for six days — nothing but the message corpus going stale said
+    so. Now prints `WA_LOGGED_OUT:restart-required` and exits, so whatever
+    supervises the process (a LaunchAgent, or the skill's own restart path)
+    starts a fresh one. Not covered by an automated test — reproducing it
+    needs an actual account logout, which would burn the reviewer's own linked
+    session to exercise; verified by reading whatsmeow's dispatch path instead
+    (`connectionevents.go:42-47,126-132`, both `LoggedOut` call sites pair the
+    event with `Store.Delete`).
 - whatsmeow bump (+ `context` API adaptations) — the version upstream pins
   reports a client version WhatsApp now rejects at connect time
   (`405 client outdated`), so it never reaches pairing. Bumped to a current
