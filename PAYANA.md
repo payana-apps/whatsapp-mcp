@@ -92,6 +92,20 @@ Each item below is a single reviewable commit on top of the forked base.
   on either side. A quieter default port would avoid it; documenting it does not,
   since the failure gives no hint where to look.
 
+- Media download that actually works (`whatsapp-bridge/media.go`). Upstream's
+  `extractDirectPathFromURL` stripped the signed query (`oh`, `oe`, `_nc_sid`)
+  from the stored URL, so `/api/download` returned 403 for every file, even one
+  received minutes earlier. Three changes:
+  - **The direct path keeps its signed query.** The stored signature lasts about
+    four weeks (`oe=`), so on-demand downloads work inside that window.
+  - **Live media is saved on arrival** while the signature is fresh, so it is on
+    disk when someone asks for it later. `WHATSAPP_AUTO_DOWNLOAD` picks the
+    types (default `image,audio,document`; `video` opt-in; `none` turns it off).
+    History sync is not auto-downloaded.
+  - **One file per message.** The on-disk name is `<message_id>_<filename>`:
+    WhatsApp reuses generic names, and the exists-check returned the first file
+    for every message that shared one.
+
 **Python MCP server (`whatsapp-mcp-server/`)**
 - Env-driven store/bridge config (`WHATSAPP_STORE_DIR`, host/port, token) so the
   launcher can keep the session under the per-user cache dir.

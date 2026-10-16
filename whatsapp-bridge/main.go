@@ -484,6 +484,17 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 			direction = "→"
 		}
 
+		// Payana: fetch media while its signed URL is fresh, so it is on disk
+		// when someone asks for it weeks later. Live messages only: history sync
+		// would pull months of files at once.
+		if shouldAutoDownload(mediaType) {
+			go func(id, jid string) {
+				if _, _, _, _, err := downloadMedia(client, messageStore, id, jid); err != nil {
+					logger.Warnf("Auto-download of %s in %s failed: %v", id, jid, err)
+				}
+			}(msg.Info.ID, chatJID)
+		}
+
 		// Log based on message type
 		if mediaType != "" {
 			fmt.Printf("[%s] %s %s: [%s: %s] %s\n", timestamp, direction, sender, mediaType, filename, content)
@@ -613,8 +624,11 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("failed to create chat directory: %v", err)
 	}
 
-	// Generate a local path for the file
-	localPath = fmt.Sprintf("%s/%s", chatDir, filename)
+	// Generate a local path for the file. Payana: prefix the message ID, because
+	// WhatsApp reuses generic names ("image_20260803_154120.jpg" was seen on three
+	// different messages of one chat) and the exists-check below would hand back
+	// the first file for all of them.
+	localPath = fmt.Sprintf("%s/%s", chatDir, localMediaName(messageID, filename))
 
 	// Get absolute path
 	absPath, err := filepath.Abs(localPath)
@@ -689,13 +703,12 @@ func extractDirectPathFromURL(url string) string {
 		return url // Return original URL if parsing fails
 	}
 
-	pathPart := parts[1]
-
-	// Remove query parameters
-	pathPart = strings.SplitN(pathPart, "?", 2)[0]
-
-	// Create proper direct path format
-	return "/" + pathPart
+	// Payana: keep the query string. WhatsApp's direct path is the path *plus* its
+	// signed query (ccb, oh, oe, _nc_sid); whatsmeow appends "&hash=...&mms-type=..."
+	// to it. Upstream stripped the query, so every download came back 403 even for
+	// media received minutes earlier. The signature in the stored URL is valid for
+	// roughly four weeks (the oe= expiry).
+	return "/" + parts[1]
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
